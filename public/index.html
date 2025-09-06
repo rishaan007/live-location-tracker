@@ -1,68 +1,147 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Live Location with MapLibre & MapTiler</title>
-  <link
-    href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css"
-    rel="stylesheet"
-  />
+  <meta charset="UTF-8">
+  <title>Live Location with MapLibre + OSM</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
   <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
-  <script src="/socket.io/socket.io.js"></script>
   <style>
-    body, html {
-      margin: 0;
-      padding: 0;
-      height: 100%;
-      width: 100%;
+    body, html { margin: 0; padding: 0; height: 100%; }
+    #map { width: 100%; height: 100%; }
+    .locate-btn {
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      background: red;
+      color: white;
+      border: none;
+      padding: 10px 15px;
+      border-radius: 6px;
+      cursor: pointer;
+      z-index: 1;
     }
-    #map {
-      width: 100%;
-      height: 100%;
+    .search-box {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1;
+      background: white;
+      padding: 5px;
+      border-radius: 6px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.2);
     }
-    .mapboxgl-ctrl-geocoder {
-      min-width: 100%;
+    .search-box input {
+      padding: 6px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      width: 250px;
     }
   </style>
 </head>
 <body>
   <div id="map"></div>
+  <div class="search-box">
+    <input type="text" id="search" placeholder="Search for places...">
+  </div>
+  <button class="locate-btn" onclick="locateMe()">Locate Me</button>
 
   <script>
-    const socket = io();
-
-    // Initialize MapLibre with MapTiler Streets
+    // Initialize map with OpenStreetMap raster tiles
     const map = new maplibregl.Map({
-      container: "map",
-      style: "https://api.maptiler.com/maps/streets/style.json?key=kASiLExSIgq3mDDTE8MZ",
-      center: [0, 0],
-      zoom: 2,
+      container: 'map',
+      style: {
+        version: 8,
+        sources: {
+          osm: {
+            type: 'raster',
+            tiles: [
+              'https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
+              'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
+              'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png'
+            ],
+            tileSize: 256,
+            attribution: '© OpenStreetMap contributors'
+          }
+        },
+        layers: [
+          {
+            id: 'osm',
+            type: 'raster',
+            source: 'osm',
+            minzoom: 0,
+            maxzoom: 19
+          }
+        ]
+      },
+      center: [88.3639, 22.5726], // Default: Kolkata
+      zoom: 5
     });
 
-    // Add zoom and rotation controls
-    map.addControl(new maplibregl.NavigationControl(), "top-right");
+    // Add zoom controls
+    map.addControl(new maplibregl.NavigationControl(), 'top-left');
 
-    // Marker variable
     let marker;
 
-    socket.on("locationUpdate", (data) => {
-      const { latitude, longitude, address } = data;
+    // Function to update marker with full address
+    async function updateMarker(lng, lat, text = null) {
+      if (marker) marker.remove();
 
-      // Center map on user's location
-      map.flyTo({ center: [longitude, latitude], zoom: 14 });
+      let address = text;
+      if (!text) {
+        try {
+          const res = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`);
+          const data = await res.json();
+          address = data.display_name || "Unknown location";
+        } catch (err) {
+          address = "Unable to fetch address";
+        }
+      }
 
-      // Add or update marker
-      if (!marker) {
-        marker = new maplibregl.Marker({ color: "red" })
-          .setLngLat([longitude, latitude])
-          .setPopup(
-            new maplibregl.Popup().setHTML(`<b>Your Location:</b><br>${address}`)
-          )
-          .addTo(map);
-      } else {
-        marker.setLngLat([longitude, latitude]);
-        marker.getPopup().setHTML(`<b>Your Location:</b><br>${address}`);
+      marker = new maplibregl.Marker().setLngLat([lng, lat]).setPopup(
+        new maplibregl.Popup().setHTML(`<b>${address}</b><br>📍 [${lat.toFixed(4)}, ${lng.toFixed(4)}]`)
+      ).addTo(map).togglePopup();
+
+      map.flyTo({ center: [lng, lat], zoom: 14 });
+    }
+
+    // Locate Me button
+    function locateMe() {
+      if (!navigator.geolocation) {
+        alert("Geolocation not supported by your browser");
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        pos => {
+          const lat = pos.coords.latitude;
+          const lng = pos.coords.longitude;
+          updateMarker(lng, lat);
+        },
+        err => {
+          alert("Error getting location: " + err.message);
+        }
+      );
+    }
+
+    // Search places using Photon API
+    document.getElementById("search").addEventListener("keypress", async (e) => {
+      if (e.key === "Enter") {
+        const query = e.target.value;
+        const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=1`;
+        try {
+          const res = await fetch(url);
+          const data = await res.json();
+          if (data.features && data.features.length > 0) {
+            const coords = data.features[0].geometry.coordinates;
+            const placeName = data.features[0].properties.name || "Result";
+            updateMarker(coords[0], coords[1], placeName);
+          } else {
+            alert("No results found");
+          }
+        } catch (err) {
+          alert("Search failed: " + err.message);
+        }
       }
     });
   </script>
